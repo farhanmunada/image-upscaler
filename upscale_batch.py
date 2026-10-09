@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# --- Native PyTorch RRDBNet Architecture (No basicsr dependency) ---
 
 class ResidualDenseBlock(nn.Module):
     def __init__(self, num_feat=64, num_grow_ch=32):
@@ -73,20 +72,15 @@ def load_model(model_path: str, device: torch.device, fp16: bool = True):
         raise FileNotFoundError(f"File model tidak ditemukan di: {model_path}")
 
     model = RRDBNet(num_in_ch=3, num_out_ch=3, scale=4, num_feat=64, num_block=23, num_grow_ch=32)
-    checkpoint = torch.load(model_path, map_location=device, weights_only=True)
-    if "params_ema" in checkpoint:
-        state_dict = checkpoint["params_ema"]
-    elif "params" in checkpoint:
-        state_dict = checkpoint["params"]
-    else:
-        state_dict = checkpoint
+    try:
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(model_path, map_location=device)
 
+    state_dict = checkpoint.get("params_ema", checkpoint.get("params", checkpoint))
     model.load_state_dict(state_dict, strict=True)
-    model.eval()
-    model = model.to(device)
-    if fp16 and device.type == "cuda":
-        model = model.half()
-    return model
+    model.eval().to(device)
+    return model.half() if (fp16 and device.type == "cuda") else model
 
 
 def process_tiles(img_tensor: torch.Tensor, model: nn.Module, tile: int = 512, tile_pad: int = 10, scale: int = 4):
@@ -95,10 +89,7 @@ def process_tiles(img_tensor: torch.Tensor, model: nn.Module, tile: int = 512, t
         with torch.no_grad():
             return model(img_tensor)
 
-    out_height = height * scale
-    out_width = width * scale
-    out_tensor = torch.zeros((batch, channel, out_height, out_width), dtype=img_tensor.dtype, device=img_tensor.device)
-
+    out_tensor = torch.zeros((batch, channel, height * scale, width * scale), dtype=img_tensor.dtype, device=img_tensor.device)
     tiles_x = math.ceil(width / tile)
     tiles_y = math.ceil(height / tile)
 
@@ -109,7 +100,6 @@ def process_tiles(img_tensor: torch.Tensor, model: nn.Module, tile: int = 512, t
             in_x_end = min(in_x + tile, width)
             in_y_end = min(in_y + tile, height)
 
-            # with padding
             in_x_pad = max(in_x - tile_pad, 0)
             in_x_end_pad = min(in_x_end + tile_pad, width)
             in_y_pad = max(in_y - tile_pad, 0)
@@ -161,37 +151,52 @@ def parse_args():
 def main():
     args = parse_args()
     os.makedirs(args.output, exist_ok=True)
+    os.makedirs(args.input, exist_ok=True)
 
     valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp")
     files = []
     for ext in valid_exts:
         files.extend(glob.glob(os.path.join(args.input, ext)))
         files.extend(glob.glob(os.path.join(args.input, ext.upper())))
+
+    # Auto-detect jika user upload file langsung ke root Colab (/content)
+    if not files and os.path.exists("/content"):
+        for ext in valid_exts:
+            for f in glob.glob(f"/content/{ext}") + glob.glob(f"/content/{ext.upper()}"):
+                dest = os.path.join(args.input, os.path.basename(f))
+                os.rename(f, dest)
+                files.append(dest)
+
     files = sorted(list(set(files)))
 
     if not files:
-        print(f"Tidak ada file gambar di folder '{args.input}'.")
-        return
+        print(f"ERROR: Tidak ditemukan file gambar di '{args.input}' atau '/content/'. Upload gambar terlebih dahulu!")
+        sys.exit(1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
-    print(f"Memuat model: {args.model_path} ...")
+    print(f"Device: {device} | Memuat model {args.model_path} ...")
     model = load_model(args.model_path, device, fp16=args.fp16)
 
-    print(f"Ditemukan {len(files)} gambar untuk di-upscale (4x)...")
+    print(f"Ditemukan {len(files)} gambar. Memulai proses upscale 4x...")
+    success_count = 0
     for i, path in enumerate(files, 1):
         filename = os.path.splitext(os.path.basename(path))[0]
         out_path = os.path.join(args.output, f"{filename}_upscaled.jpg")
-        print(f"[{i}/{len(files)}] {os.path.basename(path)} ...", end=" ", flush=True)
+        print(f"[{i}/{len(files)}] {os.path.basename(path)} -> ", end="", flush=True)
 
         try:
             with Image.open(path) as src_img:
                 out_img = upscale_image(src_img, model, device, tile=args.tile, fp16=args.fp16)
                 out_img.save(out_path, format="JPEG", quality=args.quality, subsampling=0, optimize=True)
                 w, h = out_img.size
-                print(f"SELESAI -> {os.path.basename(out_path)} ({w}x{h} px)")
+                print(f"SELESAI ({w}x{h} px)")
+                success_count += 1
         except Exception as e:
             print(f"GAGAL: {e}")
+
+    print(f"\nRingkasan: {success_count}/{len(files)} gambar berhasil diproses.")
+    if success_count == 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
