@@ -76,7 +76,7 @@ def load_model(model_path: str = "weights/RealESRGAN_x4plus.pth", device: torch.
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if not os.path.exists(model_path):
-        raise FileNotFoundError(f"File model tidak ditemukan di: {model_path}")
+        raise FileNotFoundError(f"Model file tidak ditemukan: {model_path}")
 
     model = RRDBNet(num_in_ch=3, num_out_ch=3, scale=4, num_feat=64, num_block=23, num_grow_ch=32)
     try:
@@ -160,7 +160,7 @@ def get_image_files(input_dir: str = "inputs"):
         files.extend(glob.glob(os.path.join(input_dir, ext)))
         files.extend(glob.glob(os.path.join(input_dir, ext.upper())))
 
-    # Auto-tarik jika ada file yang di-drop ke root /content Colab
+    # Auto-pindah jika file ditaruh di root /content
     if not files and os.path.exists("/content"):
         for ext in valid_exts:
             for f in glob.glob(f"/content/{ext}") + glob.glob(f"/content/{ext.upper()}"):
@@ -184,7 +184,7 @@ def clean_folders(input_dir="inputs", output_dir="outputs"):
         os.remove("hasil_upscale.zip")
 
 
-# --- CLI Main ---
+# --- CLI Entrypoint ---
 
 def main():
     parser = argparse.ArgumentParser(description="Real-ESRGAN Batch Upscaler")
@@ -206,7 +206,7 @@ def main():
     os.makedirs(args.output, exist_ok=True)
     files = get_image_files(args.input)
     if not files:
-        print(f"ERROR: Tidak ditemukan gambar di '{args.input}'.")
+        print(f"ERROR: Tidak ditemukan file gambar di '{args.input}'.")
         sys.exit(1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
