@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+weights/
+inputs/
+outputs/
+*.zip
+.ipynb_checkpoints/
