@@ -154,21 +154,28 @@ def upscale_image(pil_img: Image.Image, model: nn.Module, device: torch.device, 
 
 def get_image_files(input_dir: str = "inputs"):
     os.makedirs(input_dir, exist_ok=True)
-    valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp")
+    valid_exts = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+
+    # Otomatis pindahkan jika ada file tercecer di /content
+    if os.path.exists("/content"):
+        try:
+            for fname in os.listdir("/content"):
+                fpath = os.path.join("/content", fname)
+                if os.path.isfile(fpath) and fname.lower().endswith(valid_exts):
+                    dest = os.path.join(input_dir, fname)
+                    if not os.path.exists(dest):
+                        shutil.move(fpath, dest)
+        except Exception:
+            pass
+
     files = []
-    for ext in valid_exts:
-        files.extend(glob.glob(os.path.join(input_dir, ext)))
-        files.extend(glob.glob(os.path.join(input_dir, ext.upper())))
+    if os.path.exists(input_dir):
+        for fname in os.listdir(input_dir):
+            fpath = os.path.join(input_dir, fname)
+            if os.path.isfile(fpath) and fname.lower().endswith(valid_exts):
+                files.append(fpath)
 
-    # Auto-pindah jika file ditaruh di root /content
-    if not files and os.path.exists("/content"):
-        for ext in valid_exts:
-            for f in glob.glob(f"/content/{ext}") + glob.glob(f"/content/{ext.upper()}"):
-                dest = os.path.join(input_dir, os.path.basename(f))
-                os.rename(f, dest)
-                files.append(dest)
-
-    return sorted(list(set(files)))
+    return sorted(files)
 
 
 def clean_folders(input_dir="inputs", output_dir="outputs"):
