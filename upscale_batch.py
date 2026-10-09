@@ -12,6 +12,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+# --- PyTorch RRDBNet Architecture ---
+
 class ResidualDenseBlock(nn.Module):
     def __init__(self, num_feat=64, num_grow_ch=32):
         super().__init__()
@@ -68,7 +70,11 @@ class RRDBNet(nn.Module):
         return out
 
 
-def load_model(model_path: str, device: torch.device, fp16: bool = True):
+# --- Core Helper Functions ---
+
+def load_model(model_path: str = "weights/RealESRGAN_x4plus.pth", device: torch.device = None, fp16: bool = True):
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"File model tidak ditemukan di: {model_path}")
 
@@ -136,14 +142,33 @@ def upscale_image(pil_img: Image.Image, model: nn.Module, device: torch.device, 
     out_tensor = process_tiles(tensor, model, tile=tile, tile_pad=10, scale=4)
     out_tensor = out_tensor.squeeze(0).float().clamp(0.0, 1.0)
     out_np = (out_tensor.permute(1, 2, 0).cpu().numpy() * 255.0).round().astype(np.uint8)
-    result_img = Image.fromarray(out_np)
+    res_img = Image.fromarray(out_np)
 
     if outscale != 4.0:
         target_w = int(round(orig_w * outscale))
         target_h = int(round(orig_h * outscale))
-        result_img = result_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+        res_img = res_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
 
-    return result_img
+    return res_img
+
+
+def get_image_files(input_dir: str = "inputs"):
+    os.makedirs(input_dir, exist_ok=True)
+    valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp")
+    files = []
+    for ext in valid_exts:
+        files.extend(glob.glob(os.path.join(input_dir, ext)))
+        files.extend(glob.glob(os.path.join(input_dir, ext.upper())))
+
+    # Auto-tarik jika ada file yang di-drop ke root /content Colab
+    if not files and os.path.exists("/content"):
+        for ext in valid_exts:
+            for f in glob.glob(f"/content/{ext}") + glob.glob(f"/content/{ext.upper()}"):
+                dest = os.path.join(input_dir, os.path.basename(f))
+                os.rename(f, dest)
+                files.append(dest)
+
+    return sorted(list(set(files)))
 
 
 def clean_folders(input_dir="inputs", output_dir="outputs"):
@@ -157,74 +182,50 @@ def clean_folders(input_dir="inputs", output_dir="outputs"):
                     shutil.rmtree(p)
     if os.path.exists("hasil_upscale.zip"):
         os.remove("hasil_upscale.zip")
-    print("Folder inputs, outputs, dan file zip berhasil dibersihkan.")
 
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Pure PyTorch Real-ESRGAN Batch Upscaler")
+# --- CLI Main ---
+
+def main():
+    parser = argparse.ArgumentParser(description="Real-ESRGAN Batch Upscaler")
     parser.add_argument("-i", "--input", type=str, default="inputs", help="Folder input")
     parser.add_argument("-o", "--output", type=str, default="outputs", help="Folder output")
     parser.add_argument("-m", "--model_path", type=str, default="weights/RealESRGAN_x4plus.pth", help="Model path")
-    parser.add_argument("-s", "--scale", type=float, default=4.0, choices=[2.0, 4.0], help="Skala perbesaran (2.0 atau 4.0)")
-    parser.add_argument("-t", "--tile", type=int, default=512, help="Tile size (anti-OOM)")
-    parser.add_argument("-q", "--quality", type=int, default=96, help="JPEG quality (default: 96)")
-    parser.add_argument("--fp16", action="store_true", default=True, help="FP16 acceleration")
-    parser.add_argument("--clean", action="store_true", help="Bersihkan folder input dan output")
-    return parser.parse_args()
+    parser.add_argument("-s", "--scale", type=float, default=4.0, choices=[2.0, 4.0])
+    parser.add_argument("-t", "--tile", type=int, default=512)
+    parser.add_argument("-q", "--quality", type=int, default=96)
+    parser.add_argument("--fp16", action="store_true", default=True)
+    parser.add_argument("--clean", action="store_true")
+    args = parser.parse_args()
 
-
-def main():
-    args = parse_args()
     if args.clean:
         clean_folders(args.input, args.output)
+        print("Folder inputs, outputs, dan zip berhasil dibersihkan.")
         return
 
     os.makedirs(args.output, exist_ok=True)
-    os.makedirs(args.input, exist_ok=True)
-
-    valid_exts = ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp")
-    files = []
-    for ext in valid_exts:
-        files.extend(glob.glob(os.path.join(args.input, ext)))
-        files.extend(glob.glob(os.path.join(args.input, ext.upper())))
-
-    if not files and os.path.exists("/content"):
-        for ext in valid_exts:
-            for f in glob.glob(f"/content/{ext}") + glob.glob(f"/content/{ext.upper()}"):
-                dest = os.path.join(args.input, os.path.basename(f))
-                os.rename(f, dest)
-                files.append(dest)
-
-    files = sorted(list(set(files)))
-
+    files = get_image_files(args.input)
     if not files:
-        print(f"ERROR: Tidak ditemukan gambar di '{args.input}' atau '/content/'. Upload gambar terlebih dahulu!")
+        print(f"ERROR: Tidak ditemukan gambar di '{args.input}'.")
         sys.exit(1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device} | Memuat model {args.model_path} ...")
+    print(f"Device: {device} | Memuat model {args.model_path}...")
     model = load_model(args.model_path, device, fp16=args.fp16)
 
-    print(f"Ditemukan {len(files)} gambar. Skala target: {args.scale}x | Kualitas JPG: {args.quality}")
-    success_count = 0
+    print(f"Ditemukan {len(files)} gambar | Skala: {args.scale}x | Kualitas JPG: {args.quality}")
     for i, path in enumerate(files, 1):
         filename = os.path.splitext(os.path.basename(path))[0]
         out_path = os.path.join(args.output, f"{filename}_upscaled_{int(args.scale)}x.jpg")
-        print(f"[{i}/{len(files)}] {os.path.basename(path)} -> ", end="", flush=True)
-
+        print(f"[{i}/{len(files)}] {os.path.basename(path)} ...", end=" ", flush=True)
         try:
             with Image.open(path) as src_img:
                 out_img = upscale_image(src_img, model, device, tile=args.tile, fp16=args.fp16, outscale=args.scale)
                 out_img.save(out_path, format="JPEG", quality=args.quality, subsampling=0, optimize=True)
                 w, h = out_img.size
                 print(f"SELESAI ({w}x{h} px)")
-                success_count += 1
         except Exception as e:
             print(f"GAGAL: {e}")
-
-    print(f"\nRingkasan: {success_count}/{len(files)} gambar berhasil diproses.")
-    if success_count == 0:
-        sys.exit(1)
 
 
 if __name__ == "__main__":
