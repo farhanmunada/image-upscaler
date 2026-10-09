@@ -2,6 +2,7 @@ import argparse
 import glob
 import math
 import os
+import shutil
 import sys
 import numpy as np
 from PIL import Image
@@ -124,7 +125,8 @@ def process_tiles(img_tensor: torch.Tensor, model: nn.Module, tile: int = 512, t
     return out_tensor
 
 
-def upscale_image(pil_img: Image.Image, model: nn.Module, device: torch.device, tile: int = 512, fp16: bool = True):
+def upscale_image(pil_img: Image.Image, model: nn.Module, device: torch.device, tile: int = 512, fp16: bool = True, outscale: float = 4.0):
+    orig_w, orig_h = pil_img.size
     img = pil_img.convert("RGB")
     np_img = np.array(img, dtype=np.float32) / 255.0
     tensor = torch.from_numpy(np_img).permute(2, 0, 1).unsqueeze(0).to(device)
@@ -134,22 +136,49 @@ def upscale_image(pil_img: Image.Image, model: nn.Module, device: torch.device, 
     out_tensor = process_tiles(tensor, model, tile=tile, tile_pad=10, scale=4)
     out_tensor = out_tensor.squeeze(0).float().clamp(0.0, 1.0)
     out_np = (out_tensor.permute(1, 2, 0).cpu().numpy() * 255.0).round().astype(np.uint8)
-    return Image.fromarray(out_np)
+    result_img = Image.fromarray(out_np)
+
+    if outscale != 4.0:
+        target_w = int(round(orig_w * outscale))
+        target_h = int(round(orig_h * outscale))
+        result_img = result_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+
+    return result_img
+
+
+def clean_folders(input_dir="inputs", output_dir="outputs"):
+    for folder in [input_dir, output_dir]:
+        if os.path.exists(folder):
+            for f in os.listdir(folder):
+                p = os.path.join(folder, f)
+                if os.path.isfile(p):
+                    os.remove(p)
+                elif os.path.isdir(p):
+                    shutil.rmtree(p)
+    if os.path.exists("hasil_upscale.zip"):
+        os.remove("hasil_upscale.zip")
+    print("Folder inputs, outputs, dan file zip berhasil dibersihkan.")
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Pure PyTorch Real-ESRGAN 4x Batch Upscaler")
+    parser = argparse.ArgumentParser(description="Pure PyTorch Real-ESRGAN Batch Upscaler")
     parser.add_argument("-i", "--input", type=str, default="inputs", help="Folder input")
     parser.add_argument("-o", "--output", type=str, default="outputs", help="Folder output")
     parser.add_argument("-m", "--model_path", type=str, default="weights/RealESRGAN_x4plus.pth", help="Model path")
+    parser.add_argument("-s", "--scale", type=float, default=4.0, choices=[2.0, 4.0], help="Skala perbesaran (2.0 atau 4.0)")
     parser.add_argument("-t", "--tile", type=int, default=512, help="Tile size (anti-OOM)")
     parser.add_argument("-q", "--quality", type=int, default=96, help="JPEG quality (default: 96)")
     parser.add_argument("--fp16", action="store_true", default=True, help="FP16 acceleration")
+    parser.add_argument("--clean", action="store_true", help="Bersihkan folder input dan output")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    if args.clean:
+        clean_folders(args.input, args.output)
+        return
+
     os.makedirs(args.output, exist_ok=True)
     os.makedirs(args.input, exist_ok=True)
 
@@ -159,7 +188,6 @@ def main():
         files.extend(glob.glob(os.path.join(args.input, ext)))
         files.extend(glob.glob(os.path.join(args.input, ext.upper())))
 
-    # Auto-detect jika user upload file langsung ke root Colab (/content)
     if not files and os.path.exists("/content"):
         for ext in valid_exts:
             for f in glob.glob(f"/content/{ext}") + glob.glob(f"/content/{ext.upper()}"):
@@ -170,23 +198,23 @@ def main():
     files = sorted(list(set(files)))
 
     if not files:
-        print(f"ERROR: Tidak ditemukan file gambar di '{args.input}' atau '/content/'. Upload gambar terlebih dahulu!")
+        print(f"ERROR: Tidak ditemukan gambar di '{args.input}' atau '/content/'. Upload gambar terlebih dahulu!")
         sys.exit(1)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device} | Memuat model {args.model_path} ...")
     model = load_model(args.model_path, device, fp16=args.fp16)
 
-    print(f"Ditemukan {len(files)} gambar. Memulai proses upscale 4x...")
+    print(f"Ditemukan {len(files)} gambar. Skala target: {args.scale}x | Kualitas JPG: {args.quality}")
     success_count = 0
     for i, path in enumerate(files, 1):
         filename = os.path.splitext(os.path.basename(path))[0]
-        out_path = os.path.join(args.output, f"{filename}_upscaled.jpg")
+        out_path = os.path.join(args.output, f"{filename}_upscaled_{int(args.scale)}x.jpg")
         print(f"[{i}/{len(files)}] {os.path.basename(path)} -> ", end="", flush=True)
 
         try:
             with Image.open(path) as src_img:
-                out_img = upscale_image(src_img, model, device, tile=args.tile, fp16=args.fp16)
+                out_img = upscale_image(src_img, model, device, tile=args.tile, fp16=args.fp16, outscale=args.scale)
                 out_img.save(out_path, format="JPEG", quality=args.quality, subsampling=0, optimize=True)
                 w, h = out_img.size
                 print(f"SELESAI ({w}x{h} px)")
